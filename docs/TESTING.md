@@ -12,6 +12,29 @@ Target box: `10.4.100.147` (`vici-rtproxy`, SSH port 9999).
 | 4 | REGISTER, correct digest → 200, saved to usrloc | OK (`AoR: 16268`, Expires 300) |
 | 5 | REGISTER, wrong password → 401, not saved | OK |
 | 6 | Re-REGISTER from a new port (browser reload) → newest-wins, no 503 | OK (two registers → exactly one contact) |
+| 7 | Credential mirror: 27 real av996 webphones → `subscriber`, a real one authenticates | OK |
+| 8 | **WSS** REGISTER from a real WebSocket client (werift), incl. `;alias` | OK (usrloc shows the ws contact) |
+| 9 | **Full WebRTC media call** dialer→agent through rtpengine (DTLS-SRTP ↔ plain RTP, no transcode) | OK — see below |
+
+### Media call result
+
+A plain-RTP PCMU caller (trs source) called a WSS-registered werift agent
+(ext 31316). Full SIP dialog (INVITE→100→200→ACK→BYE), DTLS-SRTP negotiated
+(`ice: connected` / `pc: connected`), and RTP relayed **both directions**,
+confirmed by an edge capture:
+
+```
+441 packets  -> 216.66.20.147:36838   (rtpengine → agent, caller→agent leg)
+396 packets  -> 10.4.100.147:41268    (rtpengine → caller, agent→caller leg)
+caller: sent=396 received=389
+```
+
+rtpengine bridges the WebRTC agent's DTLS-SRTP and the dialer's plain RTP with
+no transcoding (PCMU end to end). Harness: `test/webrtc-client/`.
+
+(werift's inbound `onReceiveRtp` counter reads 0, but the 441 packets reaching
+the agent's port in the capture show the edge delivers that direction — a client
+quirk, not an edge defect.)
 
 Test credential: a real av996 webphone (`16268` / `NIwvV8nqWP`), inserted into
 `subscriber` by hand to stand in for the mirror.
@@ -31,20 +54,18 @@ realm the edge challenges with is `avatar.tech`.
 
 ## Not yet validated
 
-- **Media / a full call** through rtpengine (needs a WebRTC client or a
-  sipp+SDP scenario and a static Asterisk peer). The rtpengine offer/answer flags
-  and the dialer↔agent / agent↔box INVITE routing are written but unexercised.
-- **`sync_subscribers.py` against live cluster data** — network path to the
-  av996 DB is open, but the read-only grant isn't created yet (see DB-SETUP.md).
-- **WSS from a real browser** (DTLS-SRTP, ICE) — only UDP SIP has been driven so
-  far; the WSS/TLS listener is up and the handshake path (`ksr_xhttp_event`) is
-  in place but untested end to end.
+- **A real browser** (ViciPhone/JsSIP in Chrome/Firefox) end to end — the media
+  path is proven with a werift client; a real browser is the last confidence check.
+- **`sync_subscribers.py` autonomous pull** — the mirror was proven by loading
+  27 real av996 webphones into `subscriber` (read locally via `cg_dbrole`), but
+  the edge-pull needs a read-only grant for the edge IP (all cluster DB users are
+  `@localhost`), or the sync must run on the DB box. See DB-SETUP.md.
+- **agent→box path** and re-INVITE/hold — only dialer→agent was driven.
 
 ## Next
 
-1. Create `coregears_ro` on av996, run `sync_subscribers.py --clusters av996`,
-   confirm the pilot cluster's webphones populate `subscriber`.
-2. A sipp WSS scenario (register + call) for the media path, or point one real
-   ViciPhone at `wss://10.4.100.147:4443/` with its station peer set to the edge.
-3. Verify a dialer→agent call: originate `SIP/<ext>` from an av996 box to the
-   edge, confirm rtpengine bridges DTLS-SRTP↔RTP and audio flows.
+1. Point one real ViciPhone at `wss://<edge>:4443/` with its station peer set to
+   the edge (docs/asterisk-peer-template.md) and confirm a live agent call.
+2. Resolve the mirror's DB access (grant for the edge, or run-on-DB-box) so
+   `sync_subscribers.py` runs autonomously per cluster.
+3. Exercise agent-originated calls and hold/transfer re-INVITEs.

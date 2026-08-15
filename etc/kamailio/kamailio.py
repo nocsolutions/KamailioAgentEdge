@@ -232,12 +232,11 @@ class kamailio:
     #  per-transaction reply / failure                                   #
     # ------------------------------------------------------------------ #
     def ksr_onreply_manage(self, msg):
-        # anchor media on provisional/final answers that carry SDP
-        if KSR.siputils.has_body("application/sdp") > 0:
+        # anchor media on provisional/final answers that carry SDP. (KSR.siputils
+        # has no has_body in 6.1, so detect SDP via the Content-Type header.)
+        ct = KSR.hdr.get("Content-Type") or ""
+        if ct.find("application/sdp") >= 0:
             KSR.rtpengine.rtpengine_manage("")
-        # rewrite the Contact of a reply crossing to the WS side
-        if KSR.siputils.is_first_hop() > 0:
-            KSR.nathelper.set_contact_alias()
         return 1
 
     def ksr_failure_manage(self, msg):

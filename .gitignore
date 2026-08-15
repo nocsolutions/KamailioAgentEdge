@@ -14,6 +14,10 @@ tools/__pycache__/
 __pycache__/
 *.pyc
 
+# Node deps for the test client (npm install ws werift).
+test/webrtc-client/node_modules/
+test/webrtc-client/package-lock.json
+
 # Editor / swap.
 *.swp
 *~
