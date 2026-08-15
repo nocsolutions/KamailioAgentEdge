@@ -126,13 +126,21 @@ class kamailio:
                 KSR.rtpengine.rtpengine_delete("")
                 KSR.tm.t_relay()
             else:
-                # No matching INVITE transaction (already answered, or gone).
-                # Answer it: an unanswered CANCEL is retransmitted every 500ms
-                # (observed 7x on av994). Deliberately NO rtpengine_delete here -
-                # if the INVITE was already answered the call is live, and
-                # deleting would kill the media of an established call. A media
-                # session orphaned by this path is reaped by rtpengine's
-                # timeout/silent-timeout.
+                # No matching INVITE transaction - the transaction completed and
+                # was freed. Two very different situations look identical here:
+                # an ESTABLISHED call (transactions are short-lived, dialogs are
+                # not) or an orphaned offer whose call never came up. Deleting
+                # blindly would rip the audio out of a live call, which is why
+                # this used to just answer and leave the media behind.
+                # dlg_manage() gives us the discriminator: is_known_dlg() finds a
+                # dialog only for a call that actually exists.
+                if KSR.dialog.is_known_dlg() > 0:
+                    KSR.info("late CANCEL for established dialog, media kept: "
+                             + KSR.pv.gete("$ci") + "\n")
+                else:
+                    KSR.rtpengine.rtpengine_delete("")
+                # Answer it either way: an unanswered CANCEL is retransmitted
+                # every 500ms (observed 7x on av994).
                 KSR.sl.sl_send_reply(481, "Call/Transaction Does Not Exist")
             return 1
 
@@ -193,6 +201,12 @@ class kamailio:
     def _route_invite(self, msg):
         KSR.tm.t_on_reply("ksr_onreply_manage")
         KSR.tm.t_on_failure("ksr_failure_manage")
+        # Track the dialog. Two things depend on it: ksr_dialog_event gets a
+        # single guaranteed teardown hook, and the CANCEL branch can ask
+        # is_known_dlg() whether a call is actually established before deciding
+        # it is safe to tear the media down. Must come after record_route(),
+        # which request_route already did for INVITE.
+        KSR.dialog.dlg_manage()
 
         if self._from_dialer(msg):
             # dialer -> agent: find the registered WSS contact, anchor media as
@@ -390,6 +404,31 @@ class kamailio:
                 return 1
         KSR.xhttp.xhttp_reply(404, "Not Found", "text/plain",
                               "KamailioAgentEdge: WebSocket only\n")
+        return 1
+
+    # ------------------------------------------------------------------ #
+    #  dialog lifecycle                                                  #
+    # ------------------------------------------------------------------ #
+    def ksr_dialog_event(self, msg, evname):
+        """dialog:start | dialog:end | dialog:failed (dialog module event_callback).
+
+        A single guaranteed teardown hook: dialog:end covers a call that was
+        answered and is now over, dialog:failed covers one that never came up
+        (CANCEL, 4xx-6xx). rtpengine_delete is idempotent, so this happily
+        overlaps the explicit deletes on the BYE/CANCEL/failure paths - those
+        stay, because they run with the real message and are the fast path.
+
+        IMPORTANT LIMIT: when the dialog module fires this from its own timer
+        rather than from a request, it passes a FAKED message
+        (dlg_run_event_route -> faked_msg_next(), dlg_handlers.c:1706/1864), and
+        rtpengine only reads the Call-Id when the message is real SIP
+        (rtpengine.c:3648 `if(IS_SIP(msg) || IS_SIP_REPLY(msg))`). So the delete
+        below is a no-op for a pure dialog TIMEOUT. That case is still covered by
+        rtpengine's own reaper (offer-timeout / silent-timeout, 180s) - dialogs
+        do not replace it.
+        """
+        if evname == "dialog:end" or evname == "dialog:failed":
+            KSR.rtpengine.rtpengine_delete("")
         return 1
 
     def ksr_websocket_event(self, msg, evname):

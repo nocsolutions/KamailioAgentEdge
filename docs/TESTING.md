@@ -108,6 +108,34 @@ realm the edge challenges with is `avatar.tech`.
   `silent-timeout=3600` and a 10k-port range, leaked sessions exhaust the range
   and then *every* call loses audio.
 
+## Dialog tracking (what it does and does not fix)
+
+`dlg_manage()` runs on every initial INVITE and the dialog module reports
+lifecycle events to `ksr_dialog_event`. Verified on av994: dialogs track
+sessions exactly (`dlg.stats_active` 0 → 1 → 0 alongside rtpengine 0 → 1 → 0),
+and the full teardown suite still passes.
+
+It buys two things:
+
+1. **A safe CANCEL discriminator.** A CANCEL that matches no transaction used to
+   be ambiguous - an orphaned offer (safe to release) looks identical to an
+   established call whose transaction has long since been freed (releasing would
+   cut live audio), so we released nothing. `is_known_dlg()` now tells them
+   apart: no dialog → release the media, dialog present → keep it and log.
+   Exercised with `test/webrtc-client/stray_cancel.py`, which sends a CANCEL for
+   an unknown Call-ID and expects a clean `481` with no exception.
+2. **A single guaranteed teardown hook** (`dialog:end` / `dialog:failed`) that
+   overlaps the per-message deletes. `rtpengine_delete` is idempotent, so the
+   fast paths stay where they are.
+
+It does **not** fix the vanished-browser case, and it is worth being precise
+about why: when the dialog module fires the event from its own timer rather than
+from a request it passes a **faked** message (`dlg_run_event_route` →
+`faked_msg_next()`), and rtpengine only reads the Call-Id for real SIP
+(`rtpengine.c:3648`). So the delete is a no-op on a pure dialog timeout. That
+case is still covered by rtpengine's reaper (`offer-timeout` / `silent-timeout`,
+180s) and, in practice, by the far end hanging up on RTP inactivity first.
+
 ## Known operational gotchas
 
 - **A kamailio restart strands every agent.** SIP.js is configured
