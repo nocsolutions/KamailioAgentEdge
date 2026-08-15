@@ -53,12 +53,16 @@ async function handleInvite(msg) {
   // werift's SDP parser throws on a bare "a=rtcp:<port>" (RFC 3605 without the
   // optional address); rtcp-mux makes it redundant, so drop it.
   offerSdp = offerSdp.split(/\r?\n/).filter(l => !/^a=rtcp:\d+\s*$/.test(l)).join('\r\n');
-  const via = hdr(msg,'Via'), from = hdr(msg,'From'), to = hdr(msg,'To');
+  const from = hdr(msg,'From'), to = hdr(msg,'To');
   const callid = hdr(msg,'Call-ID'), cseq = hdr(msg,'CSeq');
-  // RFC 3261: a UAS MUST copy every Record-Route header, in order, into the 2xx.
-  // Without it the caller has no route set and must send its ACK straight to our
-  // Contact (a ws "<rand>.invalid" host it cannot resolve) - Asterisk then never
-  // ACKs, the channel stays Down and no media is generated.
+  // RFC 3261 8.2.6.2: a UAS MUST copy EVERY Via header, in order, into the
+  // response. The proxy chain adds its own Via on top of the caller's, so
+  // echoing only the first one means kamailio pops its Via and emits a response
+  // with NO Via at all - which Asterisk silently discards. It then never ACKs,
+  // CANCELs on hangup, and the rtpengine session is left behind.
+  const vias = msg.split('\r\n').filter(l => /^Via:/i.test(l));
+  // Likewise every Record-Route, or the caller has no route set and ACKs
+  // straight to our unroutable ws "<rand>.invalid" contact.
   const recordRoutes = msg.split('\r\n').filter(l => /^Record-Route:/i.test(l));
 
   // TURN_URL/TURN_USER/TURN_PASS + RELAY=1 reproduce the browser's ICE config
@@ -95,7 +99,7 @@ async function handleInvite(msg) {
     setTimeout(res, 5000); });
 
   const ans = pc.localDescription.sdp;
-  const L = [`SIP/2.0 200 OK`,`Via: ${via}`, ...recordRoutes,
+  const L = [`SIP/2.0 200 OK`, ...vias, ...recordRoutes,
     `From: ${from}`,`To: ${to};tag=${rand(6)}`,
     `Call-ID: ${callid}`,`CSeq: ${cseq}`,`Contact: <sip:${EXT}@${host};transport=ws>`,
     `Content-Type: application/sdp`,`Content-Length: ${Buffer.byteLength(ans)}`,``,ans];
@@ -138,11 +142,19 @@ ws.on('message', async (data) => {
     console.log('<< INVITE received');
     // 100 Trying then answer
     const via=hdr(msg,'Via'),from=hdr(msg,'From'),to=hdr(msg,'To'),callid=hdr(msg,'Call-ID'),cseq=hdr(msg,'CSeq');
-    ws.send([`SIP/2.0 100 Trying`,`Via: ${via}`,`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join('\r\n'));
+    ws.send([`SIP/2.0 100 Trying`, ...msg.split("\r\n").filter(l=>/^Via:/i.test(l)),`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join('\r\n'));
+    // NOANSWER=1: ring forever without answering, so CANCEL / no-answer-timeout
+    // teardown paths can be exercised.
+    if (process.env.NOANSWER === '1') {
+      ws.send([`SIP/2.0 180 Ringing`, ...msg.split("\r\n").filter(l=>/^Via:/i.test(l)),`From: ${from}`,`To: ${to};tag=${rand(6)}`,
+        `Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join('\r\n'));
+      console.log('>> 180 Ringing (NOANSWER mode, will not answer)');
+      return;
+    }
     try { await handleInvite(msg); } catch(e){ console.error('answer error:', e.stack || e); }
     return;
   }
   if (/^ACK /.test(first)) { console.log('<< ACK - call established'); return; }
   if (/^BYE /.test(first)) { const via=hdr(msg,'Via'),from=hdr(msg,'From'),to=hdr(msg,'To'),callid=hdr(msg,'Call-ID'),cseq=hdr(msg,'CSeq');
-    ws.send([`SIP/2.0 200 OK`,`Via: ${via}`,`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join('\r\n')); console.log('<< BYE'); return; }
+    ws.send([`SIP/2.0 200 OK`, ...msg.split("\r\n").filter(l=>/^Via:/i.test(l)),`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join("\r\n")); console.log("<< BYE"); return; }
 });

@@ -125,6 +125,15 @@ class kamailio:
             if KSR.tm.t_check_trans() > 0:
                 KSR.rtpengine.rtpengine_delete("")
                 KSR.tm.t_relay()
+            else:
+                # No matching INVITE transaction (already answered, or gone).
+                # Answer it: an unanswered CANCEL is retransmitted every 500ms
+                # (observed 7x on av994). Deliberately NO rtpengine_delete here -
+                # if the INVITE was already answered the call is live, and
+                # deleting would kill the media of an established call. A media
+                # session orphaned by this path is reaped by rtpengine's
+                # timeout/silent-timeout.
+                KSR.sl.sl_send_reply(481, "Call/Transaction Does Not Exist")
             return 1
 
         # -- absorb retransmissions --
@@ -345,6 +354,12 @@ class kamailio:
         return 1
 
     def ksr_websocket_event(self, msg, evname):
-        # usrloc expiry cleans up the AoR; just trace connection churn.
-        KSR.dbg("websocket event: " + evname + "\n")
+        # A closing WebSocket means that agent's browser is gone. usrloc expiry
+        # clears the AoR, but any call still up produces NO BYE from the browser:
+        # measured on av994, the rtpengine session survives until Asterisk's own
+        # "lack of RTP activity" timer (61s) hangs up and sends a BYE, which then
+        # releases it. Log it at NOTICE so that window is visible in the field;
+        # closing the call properly would need dialog state (dlg module).
+        KSR.info("websocket event: " + evname + " (agent connection gone; any "
+                 "live call is released when the far end times out)\n")
         return 1
