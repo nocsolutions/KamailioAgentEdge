@@ -33,19 +33,30 @@ FLT_NATS = 5
 FLB_NATB = 6
 FLB_NATSIPPING = 7
 
-# rtpengine media-transform flags, one per direction. rtpengine is stateful per
-# call-id: we describe the transports on the INVITE (offer); the reply (answer)
-# reuses the stored transforms. `direction=A direction=B` means received-on-A,
-# send-to-B, where pub/int are the interfaces defined in rtpengine.conf.
+# rtpengine media-transform flags. In the ng protocol the flags of each message
+# describe the SDP handed to the RECIPIENT of that message: offer flags shape
+# what the callee sees, answer flags shape what the original caller sees. The
+# answer MUST therefore carry its own explicit transport flags - processing the
+# answer with empty flags makes rtpengine reuse the offer's transport (SAVPF/
+# DTLS) for the caller leg, i.e. it starts DTLS toward Asterisk and waits
+# forever (observed live: ClientHello storms at av994, no media either way).
+# `direction=A direction=B` (offers only) = received-on-A, send-to-B, where
+# pub/int are the interfaces defined in rtpengine.conf.
 #
-# to Asterisk: strip everything WebRTC, hand it plain RTP/AVP.
+# OFFER toward Asterisk: strip everything WebRTC, hand it plain RTP/AVP.
 RTPE_TO_ASTERISK = ("RTP/AVP ICE=remove rtcp-mux-demux SDES-off DTLS=off "
                     "replace-origin replace-session-connection trust-address "
                     "direction=pub direction=int")
-# to agent: full WebRTC - DTLS-SRTP, ICE on our public interface, rtcp-mux.
+# OFFER toward agent: full WebRTC - DTLS-SRTP, ICE on our public interface.
 RTPE_TO_AGENT = ("RTP/SAVPF ICE=force rtcp-mux-offer SDES-off DTLS=passive "
                  "replace-origin replace-session-connection trust-address "
                  "generate-mid direction=int direction=pub")
+# ANSWER toward Asterisk (reply came FROM the agent): plain RTP, no ICE/DTLS.
+RTPE_ANSWER_TO_ASTERISK = ("RTP/AVP ICE=remove rtcp-mux-demux SDES-off DTLS=off "
+                           "replace-origin replace-session-connection")
+# ANSWER toward agent (reply came FROM Asterisk, agent-originated call).
+RTPE_ANSWER_TO_AGENT = ("RTP/SAVPF ICE=force rtcp-mux-offer SDES-off DTLS=passive "
+                        "generate-mid replace-origin replace-session-connection")
 
 
 def mod_init():
@@ -201,13 +212,23 @@ class kamailio:
     # ------------------------------------------------------------------ #
     def _route_withindlg(self, msg):
         if KSR.rr.loose_route() > 0:
-            if self._from_agent(msg):
-                KSR.nathelper.handle_ruri_alias()
+            # Resolve the ws-client alias so in-dialog requests coming FROM the
+            # dialer side (ACK/BYE, R-URI = sip:...@<rand>.invalid;alias=...) are
+            # sent over the agent's WebSocket instead of DNS-resolving .invalid
+            # and being dropped. No-op when the R-URI has no alias.
+            KSR.nathelper.handle_ruri_alias()
             if KSR.is_BYE():
-                KSR.rtpengine.rtpengine_delete()
+                KSR.rtpengine.rtpengine_delete("")
             elif KSR.is_INVITE():
-                # re-INVITE (hold/resume): re-run the offer for this leg
-                KSR.rtpengine.rtpengine_manage("")
+                # re-INVITE (hold/resume): re-run the offer with the flags for
+                # whichever side receives it, and arm the reply callback so the
+                # re-INVITE's answer is transformed too (t_on_reply is per
+                # transaction - the initial INVITE's arming does not carry over).
+                if self._from_agent(msg):
+                    KSR.rtpengine.rtpengine_manage(RTPE_TO_ASTERISK)
+                else:
+                    KSR.rtpengine.rtpengine_manage(RTPE_TO_AGENT)
+                KSR.tm.t_on_reply("ksr_onreply_manage")
             self._relay(msg)
             return 1
 
@@ -234,9 +255,21 @@ class kamailio:
     def ksr_onreply_manage(self, msg):
         # anchor media on provisional/final answers that carry SDP. (KSR.siputils
         # has no has_body in 6.1, so detect SDP via the Content-Type header.)
+        # The answer flags are direction-explicit: the SDP in this reply is
+        # consumed by the party on the OTHER side of the proxy from the sender.
         ct = KSR.hdr.get("Content-Type") or ""
         if ct.find("application/sdp") >= 0:
-            KSR.rtpengine.rtpengine_manage("")
+            if self._from_agent(msg):
+                # answer from the browser -> Asterisk gets plain RTP, no ICE/DTLS
+                KSR.rtpengine.rtpengine_manage(RTPE_ANSWER_TO_ASTERISK)
+            else:
+                # answer from Asterisk -> the browser gets WebRTC
+                KSR.rtpengine.rtpengine_manage(RTPE_ANSWER_TO_AGENT)
+        # When the reply comes from the agent's WebSocket, rewrite its Contact to
+        # the edge + alias so the far side sends in-dialog ACK/BYE back here (and
+        # not to the unroutable sip:...@<rand>.invalid ws contact).
+        if self._from_agent(msg):
+            KSR.nathelper.set_contact_alias()
         return 1
 
     def ksr_failure_manage(self, msg):
