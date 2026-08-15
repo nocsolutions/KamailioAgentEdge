@@ -146,7 +146,14 @@ class kamailio:
             return 1
         KSR.auth.consume_credentials()
 
-        if KSR.registrar.save("location", "0") < 0:
+        # Newest-wins: one station = one active binding. A browser reload or
+        # reconnect registers a *new* contact (new ws port); with max_contacts=1
+        # that would 503 ("too many contacts") until the stale one expires. Drop
+        # any prior binding for this AoR first so the latest REGISTER always wins.
+        KSR.registrar.unregister("location", KSR.pv.gete("$tu"))
+
+        # KEMI: save() flags argument is an integer, not a string.
+        if KSR.registrar.save("location", 0) < 0:
             KSR.sl.sl_reply_error()
         return 1
 
@@ -170,9 +177,9 @@ class kamailio:
 
         if self._from_agent(msg):
             # agent -> box: the client addressed its own cluster box (a
-            # conference/feature extension). Only allow trs destinations.
-            if KSR.permissions.allow_source_address(TRS_GROUP) == 0 \
-                    and self._ruri_host_in_trs(msg) == 0:
+            # conference/feature extension). Only allow trs destinations so the
+            # edge can't be used to dial arbitrary hosts.
+            if self._ruri_host_in_trs(msg) <= 0:
                 KSR.sl.sl_send_reply(403, "Destination Not Allowed")
                 return 1
             KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK)
@@ -184,8 +191,10 @@ class kamailio:
         return 1
 
     def _ruri_host_in_trs(self, msg):
-        """Allow an agent-originated call whose R-URI host is a trs IP."""
-        return KSR.permissions.allow_address_group("$rd", 0)
+        """Return the address-table group of the R-URI host, or -1 if none.
+
+        A trs destination returns TRS_GROUP (>0); anything else <=0."""
+        return KSR.permissions.allow_address_group(KSR.pv.gete("$rd"), 0)
 
     # ------------------------------------------------------------------ #
     #  in-dialog                                                         #
