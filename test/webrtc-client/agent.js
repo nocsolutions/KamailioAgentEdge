@@ -48,6 +48,12 @@ function sendRegister(auth) {
 
 // ---- media: answer an inbound INVITE with werift ----
 let rxCount = 0, txCount = 0;
+// Pending INVITE transactions, keyed by Call-ID. A 487 must be sent against the
+// INVITE transaction and therefore echo the INVITE's Via stack. CANCEL is
+// hop-by-hop, so the CANCEL we receive carries only the PROXY's Via - replying
+// with that makes the proxy pop its own Via and forward a Via-less 487, which
+// the caller silently discards (observed on av994: 487 retransmitted, ignored).
+const pending = new Map();
 async function handleInvite(msg) {
   let offerSdp = msg.split('\r\n\r\n').slice(1).join('\r\n\r\n');
   // werift's SDP parser throws on a bare "a=rtcp:<port>" (RFC 3605 without the
@@ -140,6 +146,10 @@ ws.on('message', async (data) => {
   if (/^SIP\/2\.0 200/.test(msg) && /REGISTER/.test(msg)) { console.log('REGISTERED (WSS). READY - waiting for INVITE'); return; }
   if (/^INVITE /.test(first)) {
     console.log('<< INVITE received');
+    pending.set(hdr(msg,'Call-ID'), {
+      vias: msg.split('\r\n').filter(l => /^Via:/i.test(l)),
+      from: hdr(msg,'From'), to: hdr(msg,'To'), cseq: hdr(msg,'CSeq'),
+    });
     // 100 Trying then answer
     const via=hdr(msg,'Via'),from=hdr(msg,'From'),to=hdr(msg,'To'),callid=hdr(msg,'Call-ID'),cseq=hdr(msg,'CSeq');
     ws.send([`SIP/2.0 100 Trying`, ...msg.split("\r\n").filter(l=>/^Via:/i.test(l)),`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join('\r\n'));
@@ -154,6 +164,24 @@ ws.on('message', async (data) => {
     try { await handleInvite(msg); } catch(e){ console.error('answer error:', e.stack || e); }
     return;
   }
+  if (/^CANCEL /.test(first)) {
+    const cvs = msg.split("\r\n").filter(l=>/^Via:/i.test(l));
+    const from=hdr(msg,'From'), to=hdr(msg,'To'), callid=hdr(msg,'Call-ID'), cseq=hdr(msg,'CSeq');
+    // 200 for the CANCEL itself uses the CANCEL's own Via (hop-by-hop).
+    ws.send([`SIP/2.0 200 OK`, ...cvs, `From: ${from}`, `To: ${to}`, `Call-ID: ${callid}`,
+             `CSeq: ${cseq}`, `Content-Length: 0`, ``, ``].join("\r\n"));
+    // 487 belongs to the INVITE transaction: echo the INVITE's Via stack.
+    const inv = pending.get(callid);
+    if (inv) {
+      ws.send([`SIP/2.0 487 Request Terminated`, ...inv.vias, `From: ${inv.from}`,
+               `To: ${inv.to};tag=${rand(6)}`, `Call-ID: ${callid}`,
+               `CSeq: ${inv.cseq}`, `Content-Length: 0`, ``, ``].join("\r\n"));
+      pending.delete(callid);
+      console.log('<< CANCEL -> sent 200 + 487 (INVITE Via stack)');
+    } else {
+      console.log('<< CANCEL for unknown INVITE - sent 200 only');
+    }
+    return; }
   if (/^ACK /.test(first)) { console.log('<< ACK - call established'); return; }
   if (/^BYE /.test(first)) { const via=hdr(msg,'Via'),from=hdr(msg,'From'),to=hdr(msg,'To'),callid=hdr(msg,'Call-ID'),cseq=hdr(msg,'CSeq');
     ws.send([`SIP/2.0 200 OK`, ...msg.split("\r\n").filter(l=>/^Via:/i.test(l)),`From: ${from}`,`To: ${to}`,`Call-ID: ${callid}`,`CSeq: ${cseq}`,`Content-Length: 0`,``,``].join("\r\n")); console.log("<< BYE"); return; }

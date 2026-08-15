@@ -208,6 +208,19 @@ class kamailio:
             if KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT) < 0:
                 KSR.err("rtpengine offer->agent failed for " +
                         KSR.pv.gete("$ci") + "\n")
+                # -1 does NOT mean "nothing was allocated": the daemon may have
+                # answered ok (ports pinned) and the module then failed splicing
+                # the SDP back in, or the ng reply was simply lost after the
+                # offer executed. The 500 below is STATELESS - no tm cell - so
+                # ksr_failure_manage can never run. This delete is the only
+                # teardown this call will ever get; without it the port pair is
+                # pinned until silent-timeout (an offer-only session never sees
+                # media, so the short `timeout` does not apply).
+                # NOTE: needs aggressive_redetection=1 in kamailio.cfg, else the
+                # delete cannot reach a node that was just marked disabled.
+                if KSR.rtpengine.rtpengine_delete("") < 0:
+                    KSR.err("ORPHANED rtpengine session (delete did not reach "
+                            "the daemon) ci=" + KSR.pv.gete("$ci") + "\n")
                 KSR.sl.sl_send_reply(500, "Media Anchor Failure")
                 return 1
             self._relay(msg)
@@ -223,6 +236,12 @@ class kamailio:
             if KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK) < 0:
                 KSR.err("rtpengine offer->asterisk failed for " +
                         KSR.pv.gete("$ci") + "\n")
+                # Same as the dialer leg above: the stateless 500 means no
+                # failure route, so delete here or the ports leak until
+                # silent-timeout. See the comment there.
+                if KSR.rtpengine.rtpengine_delete("") < 0:
+                    KSR.err("ORPHANED rtpengine session (delete did not reach "
+                            "the daemon) ci=" + KSR.pv.gete("$ci") + "\n")
                 KSR.sl.sl_send_reply(500, "Media Anchor Failure")
                 return 1
             self._relay(msg)
@@ -255,10 +274,23 @@ class kamailio:
                 # side receives it, and re-arm the callbacks - t_on_reply and
                 # t_on_failure are per transaction, so the initial INVITE's
                 # arming does not carry over to this one.
+                #
+                # OP_OFFER is get-or-CREATE in rtpengine, so a re-INVITE for a
+                # dialog whose session is already gone allocates a FRESH port
+                # pair - and ksr_failure_manage's has_totag() guard (correctly)
+                # refuses to delete on an in-dialog transaction, so nothing ever
+                # reaps it. Re-arm the callbacks either way, but if the offer
+                # fails, tear down what it may have just created.
                 if self._from_agent(msg):
-                    KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK)
+                    reoffer = KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK)
                 else:
-                    KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT)
+                    reoffer = KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT)
+                if reoffer < 0:
+                    KSR.err("rtpengine re-INVITE offer failed ci=" +
+                            KSR.pv.gete("$ci") + "\n")
+                    KSR.rtpengine.rtpengine_delete("")
+                    KSR.sl.sl_send_reply(500, "Media Anchor Failure")
+                    return 1
                 KSR.tm.t_on_reply("ksr_onreply_manage")
                 KSR.tm.t_on_failure("ksr_failure_manage")
             self._relay(msg)
@@ -283,11 +315,18 @@ class kamailio:
     # ------------------------------------------------------------------ #
     def _relay(self, msg):
         if KSR.tm.t_relay() < 0:
-            # Never got a transaction, so no failure route will fire - release
-            # any media session we already created for this call.
+            # NOTE: tm already emits its own negative reply here (observed:
+            # "477 ... (477/TM)" when a BYE could not be forwarded because the
+            # agent's WebSocket was gone). Do NOT send another final reply -
+            # an added 200 produced two finals for one BYE on av994. The 477 is
+            # correct enough: the dialog ends either way and the media session
+            # was already released by the BYE branch above.
+            #
+            # Only release media here, for the INVITE case: no transaction means
+            # no failure route will fire to do it.
             if KSR.is_INVITE():
                 KSR.rtpengine.rtpengine_delete("")
-            KSR.sl.sl_reply_error()
+                KSR.sl.sl_reply_error()
         return 1
 
     # ------------------------------------------------------------------ #
