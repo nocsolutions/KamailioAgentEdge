@@ -33,30 +33,38 @@ FLT_NATS = 5
 FLB_NATB = 6
 FLB_NATSIPPING = 7
 
-# rtpengine media-transform flags. In the ng protocol the flags of each message
-# describe the SDP handed to the RECIPIENT of that message: offer flags shape
-# what the callee sees, answer flags shape what the original caller sees. The
-# answer MUST therefore carry its own explicit transport flags - processing the
-# answer with empty flags makes rtpengine reuse the offer's transport (SAVPF/
-# DTLS) for the caller leg, i.e. it starts DTLS toward Asterisk and waits
-# forever (observed live: ClientHello storms at av994, no media either way).
-# `direction=A direction=B` (offers only) = received-on-A, send-to-B, where
-# pub/int are the interfaces defined in rtpengine.conf.
+# rtpengine media-transform flags. The flags of a message describe the SDP
+# rtpengine is about to PRODUCE, i.e. what the RECEIVER of that SDP will see;
+# the incoming body describes the sender. `direction=A direction=B` is
+# received-on-A / send-to-B and is OFFER-ONLY - on an answer the roles are
+# reversed and rtpengine would rebind the media to the wrong interface mid-call.
 #
-# OFFER toward Asterisk: strip everything WebRTC, hand it plain RTP/AVP.
+# The reply route MUST call rtpengine_answer(), never rtpengine_manage(): on a
+# reply, rtpengine_manage() only emits OP_ANSWER when the internal FL_SDP_BODY
+# flag was stamped on the transaction's request, and that flag is set *only* by
+# rtpengine_manage() itself handling the INVITE (rtpengine.c:5579/5583/5599).
+# Because we call rtpengine_offer() on the INVITE, rtpengine_manage() on the
+# reply silently issued a second OP_OFFER with the from/to tags swapped - which
+# is what made rtpengine inherit the browser's DTLS/SAVPF onto the Asterisk leg
+# and fire ClientHellos at av994 until "DTLS error: read timeout expired".
+#
+# replace-session-connection is deliberately absent: mr26 accepts it only for
+# compatibility and logs "not supported anymore" on every offer and answer.
+
+# OFFER toward Asterisk (agent-originated INVITE: browser -> Asterisk)
 RTPE_TO_ASTERISK = ("RTP/AVP ICE=remove rtcp-mux-demux SDES-off DTLS=off "
-                    "replace-origin replace-session-connection trust-address "
+                    "DTLS-reverse=passive replace-origin trust-address "
                     "direction=pub direction=int")
-# OFFER toward agent: full WebRTC - DTLS-SRTP, ICE on our public interface.
-RTPE_TO_AGENT = ("RTP/SAVPF ICE=force rtcp-mux-offer SDES-off DTLS=passive "
-                 "replace-origin replace-session-connection trust-address "
-                 "generate-mid direction=int direction=pub")
-# ANSWER toward Asterisk (reply came FROM the agent): plain RTP, no ICE/DTLS.
-RTPE_ANSWER_TO_ASTERISK = ("RTP/AVP ICE=remove rtcp-mux-demux SDES-off DTLS=off "
-                           "replace-origin replace-session-connection")
-# ANSWER toward agent (reply came FROM Asterisk, agent-originated call).
-RTPE_ANSWER_TO_AGENT = ("RTP/SAVPF ICE=force rtcp-mux-offer SDES-off DTLS=passive "
-                        "generate-mid replace-origin replace-session-connection")
+# OFFER toward agent (dialer-originated INVITE: Asterisk -> browser)
+RTPE_TO_AGENT = ("UDP/TLS/RTP/SAVPF ICE=force rtcp-mux-require SDES-off "
+                 "DTLS=passive generate-mid replace-origin trust-address "
+                 "direction=int direction=pub")
+# ANSWER toward Asterisk (the reply came FROM the browser)
+RTPE_ANSWER_TO_ASTERISK = ("RTP/AVP ICE=remove rtcp-mux-demux SDES-off "
+                           "DTLS=off replace-origin trust-address")
+# ANSWER toward agent (the reply came FROM Asterisk)
+RTPE_ANSWER_TO_AGENT = ("UDP/TLS/RTP/SAVPF ICE=force SDES-off DTLS=passive "
+                        "replace-origin trust-address")
 
 
 def mod_init():
@@ -111,9 +119,11 @@ class kamailio:
         if KSR.siputils.has_totag() > 0:
             return self._route_withindlg(msg)
 
-        # -- CANCEL --
+        # -- CANCEL -- release the media session too; the INVITE's failure route
+        # also deletes on the resulting 487, and rtpengine_delete is idempotent.
         if KSR.is_CANCEL():
             if KSR.tm.t_check_trans() > 0:
+                KSR.rtpengine.rtpengine_delete("")
                 KSR.tm.t_relay()
             return 1
 
@@ -182,7 +192,15 @@ class kamailio:
                 KSR.sl.sl_send_reply(404, "Agent Not Registered")
                 return 1
             KSR.nathelper.handle_ruri_alias()
-            KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT)
+            # A failed offer (ng timeout / node disabled - expected, we run with
+            # rtpengine_allow_op=1) would otherwise relay Asterisk's untouched
+            # plain-RTP SDP to the browser, which rejects it: the call would set
+            # up 200/ACK with silent audio and nothing in the SIP trace.
+            if KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT) < 0:
+                KSR.err("rtpengine offer->agent failed for " +
+                        KSR.pv.gete("$ci") + "\n")
+                KSR.sl.sl_send_reply(500, "Media Anchor Failure")
+                return 1
             self._relay(msg)
             return 1
 
@@ -193,7 +211,11 @@ class kamailio:
             if self._ruri_host_in_trs(msg) <= 0:
                 KSR.sl.sl_send_reply(403, "Destination Not Allowed")
                 return 1
-            KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK)
+            if KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK) < 0:
+                KSR.err("rtpengine offer->asterisk failed for " +
+                        KSR.pv.gete("$ci") + "\n")
+                KSR.sl.sl_send_reply(500, "Media Anchor Failure")
+                return 1
             self._relay(msg)
             return 1
 
@@ -220,15 +242,16 @@ class kamailio:
             if KSR.is_BYE():
                 KSR.rtpengine.rtpengine_delete("")
             elif KSR.is_INVITE():
-                # re-INVITE (hold/resume): re-run the offer with the flags for
-                # whichever side receives it, and arm the reply callback so the
-                # re-INVITE's answer is transformed too (t_on_reply is per
-                # transaction - the initial INVITE's arming does not carry over).
+                # re-INVITE (hold/resume): re-offer with the flags for whichever
+                # side receives it, and re-arm the callbacks - t_on_reply and
+                # t_on_failure are per transaction, so the initial INVITE's
+                # arming does not carry over to this one.
                 if self._from_agent(msg):
-                    KSR.rtpengine.rtpengine_manage(RTPE_TO_ASTERISK)
+                    KSR.rtpengine.rtpengine_offer(RTPE_TO_ASTERISK)
                 else:
-                    KSR.rtpengine.rtpengine_manage(RTPE_TO_AGENT)
+                    KSR.rtpengine.rtpengine_offer(RTPE_TO_AGENT)
                 KSR.tm.t_on_reply("ksr_onreply_manage")
+                KSR.tm.t_on_failure("ksr_failure_manage")
             self._relay(msg)
             return 1
 
@@ -238,6 +261,11 @@ class kamailio:
                 KSR.tm.t_relay()
             return 1
 
+        # In-dialog BYE that missed loose_route() (lost Route set): still release
+        # the media session before answering, or the ports stay pinned.
+        if KSR.is_BYE():
+            KSR.rtpengine.rtpengine_delete("")
+
         KSR.sl.sl_send_reply(404, "Not Here")
         return 1
 
@@ -246,6 +274,10 @@ class kamailio:
     # ------------------------------------------------------------------ #
     def _relay(self, msg):
         if KSR.tm.t_relay() < 0:
+            # Never got a transaction, so no failure route will fire - release
+            # any media session we already created for this call.
+            if KSR.is_INVITE():
+                KSR.rtpengine.rtpengine_delete("")
             KSR.sl.sl_reply_error()
         return 1
 
@@ -261,10 +293,15 @@ class kamailio:
         if ct.find("application/sdp") >= 0:
             if self._from_agent(msg):
                 # answer from the browser -> Asterisk gets plain RTP, no ICE/DTLS
-                KSR.rtpengine.rtpengine_manage(RTPE_ANSWER_TO_ASTERISK)
+                flags = RTPE_ANSWER_TO_ASTERISK
             else:
                 # answer from Asterisk -> the browser gets WebRTC
-                KSR.rtpengine.rtpengine_manage(RTPE_ANSWER_TO_AGENT)
+                flags = RTPE_ANSWER_TO_AGENT
+            # rtpengine_answer(), NOT rtpengine_manage() - see the flag comments.
+            if KSR.rtpengine.rtpengine_answer(flags) < 0:
+                # Cannot reject a reply; make it loud, the call will be silent.
+                KSR.err("rtpengine answer failed for " +
+                        KSR.pv.gete("$ci") + " - call will have no audio\n")
         # When the reply comes from the agent's WebSocket, rewrite its Contact to
         # the edge + alias so the far side sends in-dialog ACK/BYE back here (and
         # not to the unroutable sip:...@<rand>.invalid ws contact).
@@ -273,8 +310,18 @@ class kamailio:
         return 1
 
     def ksr_failure_manage(self, msg):
-        if KSR.tm.t_is_canceled() > 0:
-            return 1
+        # A negative final on the INITIAL INVITE (including the 487 that follows
+        # a CANCEL, and tm's own 408) ends the call: release the media session,
+        # or the port pair stays pinned until silent-timeout (3600s). A dialer
+        # produces far more unanswered than answered calls, so without this the
+        # 30000-40000 range is exhausted and then EVERY call loses audio.
+        #
+        # NOTE: no t_is_canceled() early return - the 487 after a CANCEL is
+        # exactly the case that must delete. The has_totag() guard keeps a
+        # failed re-INVITE (e.g. 488 on hold) from tearing down a live call;
+        # in FAILURE_ROUTE the current message is the request.
+        if KSR.siputils.has_totag() <= 0:
+            KSR.rtpengine.rtpengine_delete("")
         return 1
 
     # global onreply (all replies) - keep light
