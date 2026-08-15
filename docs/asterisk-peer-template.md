@@ -20,8 +20,8 @@ allow=opus
 ```
 
 To move an agent onto the edge, that station peer becomes a **static peer
-pointing at the edge**, with all the WebRTC/DTLS bits stripped (the edge now
-terminates them; the Asterisk leg is plain RTP):
+pointing at the edge**, with every WebRTC/DTLS option **explicitly negated** (the
+edge now terminates them; the Asterisk leg is plain RTP):
 
 ```
 [16268]
@@ -34,8 +34,26 @@ disallow=all
 allow=ulaw
 allow=opus
 directmedia=no
-; no transport=wss, no dtls*, no avpf, no icesupport, no encryption
+nat=force_rport,comedia
+transport=udp
+encryption=no
+avpf=no
+force_avp=no
+icesupport=no
+dtlsenable=no
+rtcp_mux=no
 ```
+
+> **Negate, do not omit.** chan_sip peer settings are sticky across both
+> `sip reload` and `module reload chan_sip.so`. Verified on av994 (2026-08-15):
+> after removing `dtlsenable=yes` from the template — with zero `dtlsenable`
+> lines left in `sip-vicidial.conf` and `sip show peer` reporting
+> `Encryption: No` — Asterisk *still* offered
+> `m=audio <port> UDP/TLS/RTP/SAVP` with an `a=fingerprint`. The edge answered
+> plain `RTP/AVP`, the transports did not match, and the call had no audio.
+> Only a full Asterisk restart clears the stale value, which a 650-box cutover
+> cannot do — the explicit `no` values are what make a plain reload enough.
+> Canonical SQL: `db/webphone-template-edge.sql`.
 
 - VICIdial originates `SIP/16268` → Asterisk sends the INVITE to the edge →
   the edge looks up the agent's WSS registration and bridges media via rtpengine.
@@ -44,11 +62,17 @@ directmedia=no
 - Rollback = revert the peer template and the WSS URL; the next agent login
   registers directly again.
 
-This is a change to how VICIdial *generates* the peer (the phones/template
-layer), applied per cluster. Getting VICIdial to emit the static-host template
-for webphones is the integration point still to be worked out with the VICIdial
-config owner; until then the edge can be exercised with a manually-written peer
-on one box, or with sipp/sipsak as in docs/TESTING.md.
+This is a change to how VICIdial *generates* the peer, and it needs **no code
+change**: the peer body comes from `vicidial_conf_templates.template_contents`
+(row `template_id='webphone'`, literal `\n` separators). Rewrite that row and set
+`servers.rebuild_conf_files='Y'`; VICIdial's cron regenerates
+`sip-vicidial.conf` and reloads chan_sip within ~1 minute. See
+`db/webphone-template-edge.sql`.
+
+The browser side is the matching half: DialerWeb branch `agentedge-wss` sends the
+webphone's WSS to `AGENT_EDGE_WSS` (`libs/config.php`) instead of
+`wss://<its TR>:8089/ws`. Both halves are cluster-wide, which is deliberate — a
+cluster goes to the edge wholesale, so there is no per-station fork.
 
 Because the peer is generated cluster-wide, every telephony server in the cluster
 gets the edge-pointing peer at once, and a call originated on any of them reaches

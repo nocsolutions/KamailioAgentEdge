@@ -39,6 +39,27 @@ You should see two high-count RTP flows (one toward the agent's media port on th
 public interface, one toward the caller's port). The pcap also feeds
 `pcap-sip inspect` for a SIP ladder + RTP-stream summary.
 
+## Reproducing the browser's ICE config (how the relay bug was found)
+
+`agent.js` reads `TURN_URL` / `TURN_USER` / `TURN_PASS`, and `RELAY=1` sets
+`iceTransportPolicy:"relay"` — the exact combination the ViciPhone webphone used.
+That is the A/B that isolated the media failure:
+
+```bash
+# relay-only (what the webphone did): ICE never leaves "checking", 0 RTP
+TURN_URL=turns:turn2.noc.solutions:5349 TURN_USER=coturntest TURN_PASS=<cred> RELAY=1 \
+  node agent.js wss://<edge>:4443/ws <ext> <pass> avatar.tech
+# same TURN, policy "all": ICE connected, DTLS-SRTP, ~960 packets per 20s
+TURN_URL=turns:turn2.noc.solutions:5349 TURN_USER=coturntest TURN_PASS=<cred> \
+  node agent.js wss://<edge>:4443/ws <ext> <pass> avatar.tech
+```
+
+`agent.js` also copies the INVITE's `Record-Route` headers into its 200 OK
+(RFC 3261). Without that the caller has no route set and must ACK straight to the
+ws `<rand>.invalid` contact — Asterisk then never ACKs, its channel stays `Down`,
+and no media is generated. That is a property of the *test client*, not the edge,
+but it looks identical to an edge bug if the client omits it.
+
 ## Note on werift receive counting
 
 `agent.js` reliably sends and the edge delivers inbound SRTP to its port (visible

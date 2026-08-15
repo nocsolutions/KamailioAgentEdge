@@ -55,12 +55,25 @@ async function handleInvite(msg) {
   offerSdp = offerSdp.split(/\r?\n/).filter(l => !/^a=rtcp:\d+\s*$/.test(l)).join('\r\n');
   const via = hdr(msg,'Via'), from = hdr(msg,'From'), to = hdr(msg,'To');
   const callid = hdr(msg,'Call-ID'), cseq = hdr(msg,'CSeq');
+  // RFC 3261: a UAS MUST copy every Record-Route header, in order, into the 2xx.
+  // Without it the caller has no route set and must send its ACK straight to our
+  // Contact (a ws "<rand>.invalid" host it cannot resolve) - Asterisk then never
+  // ACKs, the channel stays Down and no media is generated.
+  const recordRoutes = msg.split('\r\n').filter(l => /^Record-Route:/i.test(l));
 
-  const pc = new RTCPeerConnection({
+  // TURN_URL/TURN_USER/TURN_PASS + RELAY=1 reproduce the browser's ICE config
+  // (iceTransportPolicy:"relay" against the fleet coturn). Without them we use
+  // direct candidates and let rtpengine learn the peer.
+  const iceServers = process.env.TURN_URL
+    ? [{ urls: process.env.TURN_URL, username: process.env.TURN_USER, credential: process.env.TURN_PASS }]
+    : [];
+  const pcCfg = {
     codecs: { audio: [ new RTCRtpCodecParameters({ mimeType:'audio/PCMU', clockRate:8000, payloadType:0 }) ] },
-    // no STUN; rely on rtpengine's ICE + host/peer-reflexive learning
-    iceServers: [],
-  });
+    iceServers,
+  };
+  if (process.env.RELAY === '1') pcCfg.iceTransportPolicy = 'relay';
+  console.log('>> ice config:', JSON.stringify({ iceServers: iceServers.map(s => s.urls), policy: pcCfg.iceTransportPolicy || 'all' }));
+  const pc = new RTCPeerConnection(pcCfg);
 
   const track = new MediaStreamTrack({ kind:'audio' });
   const tr = pc.addTransceiver(track, { direction:'sendrecv' });
@@ -82,7 +95,8 @@ async function handleInvite(msg) {
     setTimeout(res, 5000); });
 
   const ans = pc.localDescription.sdp;
-  const L = [`SIP/2.0 200 OK`,`Via: ${via}`,`From: ${from}`,`To: ${to};tag=${rand(6)}`,
+  const L = [`SIP/2.0 200 OK`,`Via: ${via}`, ...recordRoutes,
+    `From: ${from}`,`To: ${to};tag=${rand(6)}`,
     `Call-ID: ${callid}`,`CSeq: ${cseq}`,`Contact: <sip:${EXT}@${host};transport=ws>`,
     `Content-Type: application/sdp`,`Content-Length: ${Buffer.byteLength(ans)}`,``,ans];
   ws.send(L.join('\r\n'));

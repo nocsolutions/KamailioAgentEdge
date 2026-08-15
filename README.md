@@ -43,6 +43,8 @@ etc/rtpengine/rtpengine.conf         media anchor: pub + int interfaces
 tools/sync_subscribers.py            VICIdial phones  -> subscriber (read-only mirror)
 tools/refresh_trs.py                 fleet trs IPs    -> address allowlist
 tools/.env.example                   tool config (copy to .env, git-ignored)
+db/webphone-template-edge.sql        per-cluster cutover: webphone peer -> edge
+test/webrtc-client/                  headless WebRTC harness (agent, caller, register)
 deploy/setup_db.sh                   create the kamailio DB (kamdbctl)
 deploy/gen_selfsigned_cert.sh        lab TLS cert
 deploy/deploy.sh                     push config to a host, validate, reload
@@ -83,8 +85,21 @@ kamcmd ul.dump                           # watch registrations
 
 ## Status
 
-First cut. Implemented: WSS handshake, digest REGISTER + usrloc, dialer→agent
-and agent→box INVITE with rtpengine WebRTC↔RTP bridging, in-dialog handling, the
-read-only credential mirror, and the trs allowlist. See `docs/` for the Asterisk
-peer-template change and the test plan. Not yet done: production TLS cert
-automation, HA pair (DMQ usrloc replication), and the sipp WSS regression suite.
+**Working end to end on av994**: a real ViciPhone agent registers over WSS,
+lands in a MeetMe conference and has bidirectional audio through the edge —
+16,985 rx / 16,996 tx RTP packets, 0% loss over a 5m40s call (Asterisk's own
+`sip show channelstats`), with rtpengine reporting `DTLS-SRTP successfully
+negotiated` and no DTLS errors.
+
+Implemented: WSS handshake, digest REGISTER + usrloc (newest-wins), dialer→agent
+and agent→box INVITE with rtpengine WebRTC↔plain-RTP bridging (no transcoding),
+in-dialog ACK/BYE via ws alias, rtpengine session teardown on every failure path,
+the read-only credential mirror, and the trs allowlist.
+
+Cutover of a cluster is two config changes, no code: `db/webphone-template-edge.sql`
+(peer → edge, WebRTC options explicitly negated) and `AGENT_EDGE_WSS` in the
+DialerWeb branch `agentedge-wss`. See `docs/`.
+
+Not yet done: agent-originated calls and hold/transfer re-INVITEs, autonomous
+credential sync (needs a read-only DB grant per cluster), HA pair (DMQ usrloc
+replication), TLS cert automation, and a load soak.
