@@ -1,0 +1,19 @@
+# Per-host secrets and overrides - ship the .example, never the real file.
+etc/kamailio/kamailio-local.cfg
+
+# Tool config - holds DB passwords.
+tools/.env
+
+# TLS material must never be committed.
+etc/kamailio/tls/
+*.pem
+*.key
+
+# Python cruft.
+tools/__pycache__/
+__pycache__/
+*.pyc
+
+# Editor / swap.
+*.swp
+*~

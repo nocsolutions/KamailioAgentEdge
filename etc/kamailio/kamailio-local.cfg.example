@@ -1,0 +1,24 @@
+# kamailio-local.cfg  -  per-host overrides and secrets (NOT in git)
+#
+#   cp kamailio-local.cfg.example kamailio-local.cfg   # then edit
+#   chmod 640 kamailio-local.cfg ; chown root:kamailio kamailio-local.cfg
+#
+# kamailio.cfg includes this first; every value there is #!trydef (define only
+# if not already defined), so a #!define here wins. Only override what differs.
+#
+# Quoting rule (must match how the token is used in kamailio.cfg):
+#   - listen tokens (PUB_IP/INT_IP/WSS_PORT): NO quotes - substituted into listen=
+#   - modparam string tokens (DBURL/RTPENGINE_SOCK): WITH quotes
+
+# --- listen sockets ---
+# PUB_IP = public, agent-facing (WSS + rtpengine public media)
+# INT_IP = internal, Asterisk-facing (plain SIP/RTP toward the dialers)
+#!define PUB_IP 216.66.20.147
+#!define INT_IP 10.4.100.147
+#!define WSS_PORT 4443
+
+# --- database (the real password lives here, not in kamailio.cfg) ---
+#!define DBURL "mysql://kamailio:CHANGE-ME@localhost/kamailio"
+
+# --- rtpengine ng control socket (local daemon, see etc/rtpengine/rtpengine.conf) ---
+#!define RTPENGINE_SOCK "udp:127.0.0.1:2223"

@@ -1,0 +1,20 @@
+# Defaults for the kamailio systemd service on the agent edge.
+# Installed to /etc/default/kamailio.
+
+# Set to yes to let the service start.
+RUN_KAMAILIO=yes
+
+# User/group the daemon drops to.
+USER=kamailio
+GROUP=kamailio
+
+# Main config (the KEMI bootstrap).
+CFGFILE=/etc/kamailio/kamailio.cfg
+
+# Shared and package memory (MB). 64/8 is ample for ~1-2k registrations and the
+# rtpengine session table on this box; raise SHM if usrloc/htable grow.
+SHM_MEMORY=64
+PKG_MEMORY=8
+
+# Extra flags. -m/-M are taken from the values above by the init wrapper.
+#EXTRA_OPTIONS=""

@@ -1,0 +1,23 @@
+# kamctl / kamdbctl configuration for the agent edge.
+# Used only for DB provisioning (deploy/setup_db.sh) and manual kamctl ops.
+# The RW/RO passwords are NOT set here - deploy/setup_db.sh exports DBRWPW and
+# DBROPW from tools/.env so no secret lands in git. Keep it that way.
+
+DBENGINE=MYSQL
+DBHOST=localhost
+DBPORT=3306
+DBNAME=kamailio
+DBRWUSER=kamailio
+DBROUSER=kamailioro
+
+# Superuser used to create the DB and users (local socket auth on MariaDB).
+DBROOTUSER="root"
+
+# Standard tables plus the ones this edge needs.
+# (subscriber -> auth_db, location -> usrloc, address -> permissions/trs.)
+INSTALL_EXTRA_TABLES=no
+INSTALL_PRESENCE_TABLES=no
+INSTALL_DBUID_TABLES=no
+
+# Charset for the kamailio DB.
+CHARSET=utf8
