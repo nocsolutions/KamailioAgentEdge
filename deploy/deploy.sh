@@ -59,5 +59,10 @@ REMOTE
 
 echo
 echo ">> config valid. To apply:"
-echo "   ${SSH} 'sudo systemctl restart rtpengine kamailio'"
+echo "   ${SSH} 'sudo systemctl restart kamailio'"
+echo ""
+echo ">> Do NOT restart rtpengine to pick up config changes: it drops every"
+echo "   in-progress call's audio and all kernel forwarding entries. The"
+echo "   timeouts can be set live instead, e.g.:"
+echo "   ${SSH} 'rtpengine-ctl set offertimeout 180; rtpengine-ctl list offertimeout'"
 echo "   (restart, not reload - KEMI script changes need a full restart)"
