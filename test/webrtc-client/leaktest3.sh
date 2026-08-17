@@ -1,10 +1,10 @@
 #!/bin/bash
 # Remaining teardown scenarios: no-answer timeout and agent-side BYE.
-#   leaktest3.sh <password>
+#   AST_HOST=<asterisk-ip> EXT=<ext> leaktest3.sh <password>
 PW="${1:?need 21382 password}"
 SP="$(cd "$(dirname "$0")" && pwd)"
 EDGE="ssh -o BatchMode=yes -o ConnectTimeout=10 -p 9999 alexandruc@10.4.100.147"
-AST="ssh -o BatchMode=yes -o ConnectTimeout=10 -p 1818 alexandruc@10.4.59.64"
+AST="ssh -o BatchMode=yes -o ConnectTimeout=10 -p 1818 alexandruc@${AST_HOST:-10.4.59.64}"
 
 ids() { $EDGE 'rtpengine-ctl --ip 127.0.0.1 --port 9900 list sessions all 2>/dev/null' 2>/dev/null \
         | sed -n 's/.*ID: *\([^ |]*\).*/\1/p' | sort; }
@@ -23,11 +23,11 @@ check() { # $1 name  $2 new-ids
 
 echo "=== C: no-answer, caller gives up (originate timeout -> CANCEL) ==="
 stop_agent
-NOANSWER=1 node "$SP/wsclient/agent.js" "wss://216.66.20.147:4443/ws" 21382 "$PW" avatar.tech >/tmp/lt3a.log 2>&1 &
+NOANSWER=1 node "$SP/wsclient/agent.js" "wss://216.66.20.147:4443/ws" ${EXT:-21382} "$PW" avatar.tech >/tmp/lt3a.log 2>&1 &
 sleep 5
 ids > /tmp/i_before
 # originate with a short timeout so Asterisk itself gives up
-ast "originate SIP/21382 application Milliwatt" >/dev/null 2>&1 &
+ast "originate SIP/${EXT:-21382} application Milliwatt" >/dev/null 2>&1 &
 sleep 7
 ids > /tmp/i_during
 NEW=$(comm -13 /tmp/i_before /tmp/i_during)
@@ -39,10 +39,10 @@ stop_agent
 echo
 
 echo "=== D: agent-side BYE (browser hangs up) ==="
-node "$SP/wsclient/agent.js" "wss://216.66.20.147:4443/ws" 21382 "$PW" avatar.tech >/tmp/lt3b.log 2>&1 &
+node "$SP/wsclient/agent.js" "wss://216.66.20.147:4443/ws" ${EXT:-21382} "$PW" avatar.tech >/tmp/lt3b.log 2>&1 &
 sleep 5
 ids > /tmp/i_before
-ast "channel originate SIP/21382 application Milliwatt" >/dev/null 2>&1 &
+ast "channel originate SIP/${EXT:-21382} application Milliwatt" >/dev/null 2>&1 &
 sleep 9
 ids > /tmp/i_during
 NEW=$(comm -13 /tmp/i_before /tmp/i_during)
@@ -51,7 +51,7 @@ echo "  killing the agent's WebSocket (simulates browser close - no BYE at all)"
 stop_agent
 sleep 12
 check "agent WS death (no BYE)" "$NEW"
-CH=$(ast "core show channels concise" | grep -a "SIP/21382" | head -1 | cut -d'!' -f1)
+CH=$(ast "core show channels concise" | grep -a "SIP/${EXT:-21382}" | head -1 | cut -d'!' -f1)
 [ -n "$CH" ] && { echo "  (asterisk channel $CH still up - hanging up)"; ast "channel request hangup $CH" >/dev/null; sleep 6; check "after asterisk BYE" "$NEW"; }
 echo
 echo "final sessions: $(ids | wc -l)"

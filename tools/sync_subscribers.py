@@ -98,7 +98,14 @@ def fetch_rows(env, min_users):
 
     if ssh_target:
         cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
-               "-p", str(env.get("CGAUTH_SSH_PORT", "22")), ssh_target, remote]
+               "-p", str(env.get("CGAUTH_SSH_PORT", "22"))]
+        # cron has no ssh-agent, so point at the key explicitly. The matching
+        # authorized_keys entry on the login host is restricted with a forced
+        # command, so this key can run nothing but the read-only cgauth query.
+        key = env.get("CGAUTH_SSH_KEY", "").strip()
+        if key:
+            cmd += ["-i", key, "-o", "IdentitiesOnly=yes"]
+        cmd += [ssh_target, remote]
     else:
         cmd = ["sh", "-c", remote]
 

@@ -69,3 +69,53 @@ through - writing one would leave the other agent unable to register, silently a
 indistinguishably from a wrong password. Fix them in cgauth; the tool reports each
 one with its user_ids and clusters.
 
+
+## Running the sync on a schedule
+
+`deploy/sync-cron.sh` is the cron wrapper; it is installed on the edge at
+`/opt/KamailioAgentEdge/deploy/sync-cron.sh` and driven every 10 minutes:
+
+```
+*/10 * * * * /opt/KamailioAgentEdge/deploy/sync-cron.sh
+```
+
+It takes a lock so a slow run cannot overlap the next, sends all output to
+`/var/log/coregears/sync_subscribers.log` (so cron only mails if the wrapper
+itself dies), and writes `/var/lib/coregears/last_success` only on a successful
+run.
+
+**Alert on `last_success` being stale, not on a single failed run.** Every failure
+mode of the sync is fail-closed - a short read, an implausibly small source, or an
+over-budget delete all abort with `subscriber` untouched - so one bad run is
+harmless and leaves the last good credentials serving. What is dangerous is
+nobody noticing that it has not succeeded for hours:
+
+```bash
+# stale if the last success is older than 30 minutes
+test $(( $(date +%s) - $(date -d "$(cat /var/lib/coregears/last_success)" +%s) )) -lt 1800
+```
+
+### Remaining prerequisite
+
+The edge pulls from the login host over ssh with a dedicated key
+(`~/.ssh/id_ed25519_cgauth`, `CGAUTH_SSH_KEY` in `tools/.env`). The edge already
+trusts the login host's host key; what is missing is authorising the public key
+**on 10.4.100.6**, restricted so it can do nothing but the read:
+
+```
+command="sudo -n sqlite3 -readonly -noheader -separator '|' /root/db/cgauth.db",\
+no-agent-forwarding,no-port-forwarding,no-pty,no-X11-forwarding <the edge's pubkey>
+```
+
+The forced command is what makes this safe: the SQL arrives on stdin, so the key
+cannot run anything else on that host. Until it is added the cron runs, fails
+closed, and logs `Permission denied (publickey)` - no credentials change.
+
+Offline fallback used during testing: export just the users table and read it
+locally, which needs no ssh from the edge at all.
+
+```bash
+ssh <login-host> 'sudo sqlite3 -readonly /root/db/cgauth.db ".dump users"' > users.sql
+sqlite3 /var/lib/coregears/cgauth_users.db < users.sql   # on the edge
+# then in tools/.env: CGAUTH_SSH=   CGAUTH_SUDO=0   CGAUTH_DB=/var/lib/coregears/cgauth_users.db
+```
