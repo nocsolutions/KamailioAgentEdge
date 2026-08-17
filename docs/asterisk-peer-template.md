@@ -26,7 +26,7 @@ edge now terminates them; the Asterisk leg is plain RTP):
 ```
 [<ext>]
 type=friend
-host=<edge-int-ip>        ; 10.4.100.147 (edge, Asterisk-facing socket)
+host=agentedgeint.avatar.tech   ; the edge's Asterisk-facing socket
 port=5060
 qualify=yes
 context=default

@@ -29,7 +29,7 @@
 -- ) and set rebuild_conf_files='Y' again.
 
 UPDATE vicidial_conf_templates
-SET template_contents='type=friend\nhost=10.4.100.147\nport=5060\nqualify=yes\ncontext=default\ndisallow=all\nallow=ulaw\nallow=opus\ndtmfmode=auto\ndirectmedia=no\nnat=force_rport,comedia\ntransport=udp\nencryption=no\navpf=no\nforce_avp=no\nicesupport=no\ndtlsenable=no\nrtcp_mux=no'
+SET template_contents='type=friend\nhost=agentedgeint.avatar.tech\nport=5060\nqualify=yes\ncontext=default\ndisallow=all\nallow=ulaw\nallow=opus\ndtmfmode=auto\ndirectmedia=no\nnat=force_rport,comedia\ntransport=udp\nencryption=no\navpf=no\nforce_avp=no\nicesupport=no\ndtlsenable=no\nrtcp_mux=no'
 WHERE template_id='webphone';
 
 -- Trigger regeneration + chan_sip reload on every server in the cluster.

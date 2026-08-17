@@ -29,6 +29,10 @@ import os
 import subprocess
 import sys
 
+# Rows per statement when writing. 1000 keeps the packet well under MySQL's
+# default max_allowed_packet while cutting a fleet-wide sync to ~21 statements.
+CHUNK = 1000
+
 try:
     import pymysql
 except ImportError:
@@ -194,7 +198,7 @@ def sync(kam, realm, creds, hold, dry_run, may_prune, prune_floor, max_delete):
                            database=kam["db"], connect_timeout=8,
                            autocommit=False)
     added = updated = removed = 0
-    skipped = None
+    skipped = None  # set below from the computed sets
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT username, password FROM subscriber WHERE domain=%s",
@@ -216,23 +220,30 @@ def sync(kam, realm, creds, hold, dry_run, may_prune, prune_floor, max_delete):
                          f"was written. Re-run with a higher budget only if this "
                          f"many agents really were removed.")
 
-            for ext in sorted(set(creds) - set(existing)):
-                added += 1
-                if not dry_run:
-                    cur.execute("INSERT INTO subscriber (username, domain, password)"
-                                " VALUES (%s, %s, %s)", (ext, realm, creds[ext]))
-            for ext in sorted(set(creds) & set(existing)):
-                if existing[ext] != creds[ext]:
-                    updated += 1
-                    if not dry_run:
-                        cur.execute("UPDATE subscriber SET password=%s "
-                                    "WHERE username=%s AND domain=%s",
-                                    (creds[ext], ext, realm))
-            for ext in stale:
-                removed += 1
-                if not dry_run:
-                    cur.execute("DELETE FROM subscriber "
-                                "WHERE username=%s AND domain=%s", (ext, realm))
+            to_add = sorted(set(creds) - set(existing))
+            to_upd = sorted(e for e in set(creds) & set(existing)
+                            if existing[e] != creds[e])
+            added, updated, removed = len(to_add), len(to_upd), len(stale)
+
+            # Batched deliberately. One statement per row meant ~20k round-trips
+            # for a fleet-wide run, which took over four minutes when the tool
+            # ran anywhere other than the edge itself. `account_idx` is UNIQUE on
+            # (username, domain), so adds and password changes collapse into one
+            # multi-row upsert; deletes go out as chunked IN-lists. That is ~21
+            # statements instead of ~20700.
+            if not dry_run:
+                rows = [(e, realm, creds[e]) for e in to_add + to_upd]
+                for i in range(0, len(rows), CHUNK):
+                    cur.executemany(
+                        "INSERT INTO subscriber (username, domain, password) "
+                        "VALUES (%s, %s, %s) "
+                        "ON DUPLICATE KEY UPDATE password = VALUES(password)",
+                        rows[i:i + CHUNK])
+                for i in range(0, len(stale), CHUNK):
+                    batch = stale[i:i + CHUNK]
+                    cur.execute(
+                        "DELETE FROM subscriber WHERE domain = %s AND username IN "
+                        f"({','.join(['%s'] * len(batch))})", [realm] + batch)
         if dry_run:
             conn.rollback()
         else:
