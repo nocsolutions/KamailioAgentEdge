@@ -75,15 +75,20 @@ no transcoding (PCMU end to end). Harness: `test/webrtc-client/`.
 the agent's port in the capture show the edge delivers that direction — a client
 quirk, not an edge defect.)
 
-Test credential: a real av996 webphone (`16268` / `NIwvV8nqWP`), inserted into
-`subscriber` by hand to stand in for the mirror.
+Test credential: a real av996 webphone, inserted into `subscriber` by hand to
+stand in for the mirror. Take the ext/password from the source at run time and
+keep them out of files and shell history - never paste a live agent credential
+into this repo (see the note under "Reproduce" below).
 
 ### Reproduce the REGISTER tests
 
 ```bash
 # on the edge box
-sipsak -U -i -s sip:16268@10.4.100.147 \
-  --auth-username=16268 --password=NIwvV8nqWP -x 300 -v
+# EXT and the password are read interactively so neither lands in argv
+# (visible in ps) or in shell history.
+read -r EXT; read -rs WEBPHONE_PASS
+sipsak -U -i -s "sip:$EXT@10.4.100.147" \
+  --auth-username="$EXT" --password="$WEBPHONE_PASS" -x 300 -v
 sudo kamcmd ul.dump          # AoR 16268 with one contact
 ```
 

@@ -5,9 +5,9 @@ peer VICIdial generates (`/etc/asterisk/sip-vicidial.conf`, cluster-wide since
 `phones.server_ip='0.0.0.0'`) looks like:
 
 ```
-[16268]
-username=16268
-secret=NIwvV8nqWP
+[<ext>]
+username=<ext>
+secret=<phone_pass>
 host=dynamic
 transport=wss
 encryption=yes
@@ -24,7 +24,7 @@ pointing at the edge**, with every WebRTC/DTLS option **explicitly negated** (th
 edge now terminates them; the Asterisk leg is plain RTP):
 
 ```
-[16268]
+[<ext>]
 type=friend
 host=<edge-int-ip>        ; 10.4.100.147 (edge, Asterisk-facing socket)
 port=5060
