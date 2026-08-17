@@ -73,16 +73,22 @@ one with its user_ids and clusters.
 ## Running the sync on a schedule
 
 `deploy/sync-cron.sh` is the cron wrapper; it is installed on the edge at
-`/opt/KamailioAgentEdge/deploy/sync-cron.sh` and driven every 10 minutes:
+`/opt/KamailioAgentEdge/deploy/sync-cron.sh` and runs every minute:
 
 ```
-*/10 * * * * /opt/KamailioAgentEdge/deploy/sync-cron.sh
+* * * * * /opt/KamailioAgentEdge/deploy/sync-cron.sh
 ```
 
-It takes a lock so a slow run cannot overlap the next, sends all output to
-`/var/log/coregears/sync_subscribers.log` (so cron only mails if the wrapper
-itself dies), and writes `/var/lib/coregears/last_success` only on a successful
-run.
+A run takes ~1.8s (measured on the edge), so a minute is comfortable; the flock
+makes it safe anyway - if a run ever overran, the next steps aside rather than
+piling up. At this cadence a credential change in cgauth reaches the edge within
+60 seconds, and anything that drifts out of line is put back on the next tick.
+
+**Logging is deliberately quiet.** One run a minute would otherwise write ~5800
+no-op lines a day and bury the events worth seeing, so a run that changes nothing
+logs nothing; only changes, conflicts and failures are written. Liveness comes
+from `/var/lib/coregears/last_success`, refreshed on every successful run - so an
+empty log means healthy, and staleness is still detectable.
 
 **Alert on `last_success` being stale, not on a single failed run.** Every failure
 mode of the sync is fail-closed - a short read, an implausibly small source, or an
@@ -91,8 +97,8 @@ harmless and leaves the last good credentials serving. What is dangerous is
 nobody noticing that it has not succeeded for hours:
 
 ```bash
-# stale if the last success is older than 30 minutes
-test $(( $(date +%s) - $(date -d "$(cat /var/lib/coregears/last_success)" +%s) )) -lt 1800
+# at a 1-minute cadence, stale after 5 minutes means something is wrong
+test $(( $(date +%s) - $(date -d "$(cat /var/lib/coregears/last_success)" +%s) )) -lt 300
 ```
 
 ### Remaining prerequisite
