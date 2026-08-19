@@ -30,5 +30,5 @@ sudo mysql "${KAM_DB_NAME:-kamailio}" -e "SHOW TABLES;" | \
 
 echo
 echo "Done. Next:"
-echo "  tools/refresh_trs.py         # load the trs allowlist"
+echo "  mysql kamailio < db/trusted-networks.sql   # trust the internal network"
 echo "  tools/sync_subscribers.py    # mirror webphone credentials"

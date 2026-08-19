@@ -75,7 +75,7 @@ EDGE_HOST=10.4.100.147 EDGE_PORT=9999 deploy/deploy.sh     # validates with kama
 sudo deploy/gen_selfsigned_cert.sh                          # lab cert for :4443
 
 # 3. data
-tools/refresh_trs.py                     # load cluster telephony-server IPs
+sudo mysql kamailio < db/trusted-networks.sql   # trust the internal network
 tools/sync_subscribers.py --clusters av996   # mirror one cluster's webphone creds
 
 # 4. start
@@ -94,7 +94,7 @@ negotiated` and no DTLS errors.
 Implemented: WSS handshake, digest REGISTER + usrloc (newest-wins), dialer→agent
 and agent→box INVITE with rtpengine WebRTC↔plain-RTP bridging (no transcoding),
 in-dialog ACK/BYE via ws alias, rtpengine session teardown on every failure path,
-the read-only credential mirror, and the trs allowlist.
+the read-only credential mirror, and source-address trust for the dialer leg.
 
 Cutover of a cluster is two config changes, no code: `db/webphone-template-edge.sql`
 (peer → edge, WebRTC options explicitly negated) and `AGENT_EDGE_WSS` in the

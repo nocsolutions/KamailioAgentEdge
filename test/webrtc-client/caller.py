@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plain-RTP PCMU caller (the 'dialer' leg) for testing the agent edge.
 
-Runs on the edge box (source IP in the trs allowlist). Sends INVITE for an agent
+Runs on the edge box (source IP inside the trusted internal network). Sends INVITE for an agent
 ext, on 200 ACKs, streams PCMU RTP to the address rtpengine gave, and counts
 what comes back. No auth (dialer is IP-trusted).
 

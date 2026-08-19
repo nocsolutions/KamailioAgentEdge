@@ -19,7 +19,7 @@
 ##     INVITE to SIP/<ext>; we look up the agent's WSS contact and bridge media
 ##     through rtpengine (plain RTP <-> DTLS-SRTP, no transcoding).
 ##   - agent-originated INVITE (login conference dial-in, DTMF) is relayed to the
-##     target box the client addressed, gated by the same trs allowlist.
+##     target box the client addressed, gated by the same source-address trust.
 
 import KSR
 
