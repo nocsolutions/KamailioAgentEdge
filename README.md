@@ -41,7 +41,7 @@ etc/kamailio/kamctlrc                kamdbctl config (passwords come from .env)
 etc/default/kamailio                 service defaults
 etc/rtpengine/rtpengine.conf         media anchor: pub + int interfaces
 tools/sync_subscribers.py            VICIdial phones  -> subscriber (read-only mirror)
-tools/refresh_trs.py                 fleet trs IPs    -> address allowlist
+db/trusted-networks.sql              source-address trust (one subnet row)
 tools/.env.example                   tool config (copy to .env, git-ignored)
 db/webphone-template-edge.sql        per-cluster cutover: webphone peer -> edge
 test/webrtc-client/                  headless WebRTC harness (agent, caller, register)

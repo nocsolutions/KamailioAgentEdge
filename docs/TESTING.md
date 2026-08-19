@@ -8,7 +8,7 @@ Target box: `10.4.100.147` (`vici-rtproxy`, SSH port 9999).
 |---|-------|--------|
 | 1 | `kamailio -c` loads the KEMI bootstrap + compiles `kamailio.py` | OK |
 | 2 | kamailio 6.1.3 + rtpengine mr26.0.1.9 services start clean | OK (rtpengine "found, support enabled"; TLS keys loaded) |
-| 3 | `refresh_trs.py` → `address` group 1 | 650 trs IPs loaded, `permissions.addressReload` OK |
+| 3 | source-address trust → `address` group 1 | one row, `10.0.0.0/8`; loads into the permissions *subnet* table |
 | 4 | REGISTER, correct digest → 200, saved to usrloc | OK (`AoR: 16268`, Expires 300) |
 | 5 | REGISTER, wrong password → 401, not saved | OK |
 | 6 | Re-REGISTER from a new port (browser reload) → newest-wins, no 503 | OK (two registers → exactly one contact) |
