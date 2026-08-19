@@ -432,12 +432,17 @@ class kamailio:
         return 1
 
     def ksr_websocket_event(self, msg, evname):
-        # A closing WebSocket means that agent's browser is gone. usrloc expiry
-        # clears the AoR, but any call still up produces NO BYE from the browser:
-        # measured on av994, the rtpengine session survives until Asterisk's own
-        # "lack of RTP activity" timer (61s) hangs up and sends a BYE, which then
-        # releases it. Log it at NOTICE so that window is visible in the field;
-        # closing the call properly would need dialog state (dlg module).
-        KSR.info("websocket event: " + evname + " (agent connection gone; any "
-                 "live call is released when the far end times out)\n")
+        # A closing WebSocket means that agent's browser is gone. The contact
+        # goes with it - usrloc handle_lost_tcp (kamailio.cfg) drops the contact
+        # bound to the dead connection, so the agent reads as Not Registered
+        # immediately rather than absorbing calls for the rest of its expiry.
+        #
+        # A call still up is a separate matter: the browser sends no BYE, so the
+        # rtpengine session lives until Asterisk's own "lack of RTP activity"
+        # timer (61s, measured on av994) hangs up and BYEs, which releases it.
+        # That window is bounded and self-clearing, so it is logged rather than
+        # forced - tearing the dialog down from here would race the BYE.
+        KSR.info("websocket event: " + evname + " (agent connection gone; "
+                 "contact dropped, any live call released when the far end "
+                 "times out)\n")
         return 1
